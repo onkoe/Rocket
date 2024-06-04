@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::request::Request;
 use crate::http::{Method, Status};
-
 use crate::{Route, Catcher};
 use crate::router::Collide;
 
 #[derive(Debug, Default)]
 pub(crate) struct Router {
-    routes: HashMap<Method, Vec<Route>>,
-    catchers: HashMap<Option<u16>, Vec<Catcher>>,
+    routes: FxHashMap<Option<Method>, Vec<Route>>,
+    final_routes: FxHashMap<Method, Vec<Route>>,
+    catchers: FxHashMap<Option<u16>, Vec<Catcher>>,
 }
 
 pub type Collisions<T> = Vec<(T, T)>;
@@ -45,8 +45,9 @@ impl Router {
         &'a self,
         req: &'r Request<'r>
     ) -> impl Iterator<Item = &'a Route> + 'r {
-        // Note that routes are presorted by ascending rank on each `add`.
-        self.routes.get(&req.method())
+        // Note that routes are presorted by ascending rank on each `add` and
+        // that all routes with `None` methods have been cloned into all methods.
+        self.final_routes.get(&req.method())
             .into_iter()
             .flat_map(move |routes| routes.iter().filter(move |r| r.matches(req)))
     }
@@ -80,7 +81,13 @@ impl Router {
             })
     }
 
-    pub fn finalize(&self) -> Result<(), (Collisions<Route>, Collisions<Catcher>)> {
+    fn _add_route(map: &mut FxHashMap<Method, Vec<Route>>, method: Method, route: Route) {
+        let routes = map.entry(method).or_default();
+        routes.push(route);
+        routes.sort_by_key(|r| r.rank);
+    }
+
+    pub fn finalize(&mut self) -> Result<(), (Collisions<Route>, Collisions<Catcher>)> {
         let routes: Vec<_> = self.collisions(self.routes()).collect();
         let catchers: Vec<_> = self.collisions(self.catchers()).collect();
 
@@ -88,6 +95,21 @@ impl Router {
             return Err((routes, catchers))
         }
 
+        let all_routes = self.routes.iter()
+            .flat_map(|(method, routes)| routes.iter().map(|r| (*method, r)))
+            .map(|(method, route)| (method, route.clone()));
+
+        let mut final_routes = FxHashMap::default();
+        for (method, route) in all_routes {
+            match method {
+                Some(method) => Self::_add_route(&mut final_routes, method, route),
+                None => for method in Method::ALL_VARIANTS {
+                    Self::_add_route(&mut final_routes, *method, route.clone());
+                }
+            }
+        }
+
+        self.final_routes = final_routes;
         Ok(())
     }
 }
@@ -101,7 +123,7 @@ mod test {
     use crate::http::{Method::*, uri::Origin};
 
     impl Router {
-        fn has_collisions(&self) -> bool {
+        fn has_collisions(&mut self) -> bool {
             self.finalize().is_err()
         }
     }
@@ -137,12 +159,12 @@ mod test {
     }
 
     fn rankless_route_collisions(routes: &[&'static str]) -> bool {
-        let router = router_with_rankless_routes(routes);
+        let mut router = router_with_rankless_routes(routes);
         router.has_collisions()
     }
 
     fn default_rank_route_collisions(routes: &[&'static str]) -> bool {
-        let router = router_with_routes(routes);
+        let mut router = router_with_routes(routes);
         router.has_collisions()
     }
 
@@ -367,7 +389,7 @@ mod test {
     /// Asserts that `$to` routes to `$want` given `$routes` are present.
     macro_rules! assert_ranked_match {
         ($routes:expr, $to:expr => $want:expr) => ({
-            let router = router_with_routes($routes);
+            let mut router = router_with_routes($routes);
             assert!(!router.has_collisions());
             let route_path = route(&router, Get, $to).unwrap().uri.to_string();
             assert_eq!(route_path, $want.to_string(),
@@ -401,7 +423,7 @@ mod test {
     }
 
     fn ranked_collisions(routes: &[(isize, &'static str)]) -> bool {
-        let router = router_with_ranked_routes(routes);
+        let mut router = router_with_ranked_routes(routes);
         router.has_collisions()
     }
 

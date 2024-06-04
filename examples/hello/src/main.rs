@@ -33,7 +33,7 @@ fn mir() -> &'static str {
 
 // Try visiting:
 //   http://127.0.0.1:8000/wave/Rocketeer/100
-#[get("/<name>/<age>")]
+#[get("/<name>/<age>", rank = 2)]
 fn wave(name: &str, age: u8) -> String {
     format!("👋 Hello, {} year old named {}!", age, name)
 }
@@ -72,9 +72,13 @@ fn hello(lang: Option<Lang>, opt: Options<'_>) -> String {
     greeting
 }
 
+#[route(uri = "/<_..>", rank = 3)]
+fn wild() { }
+
 #[launch]
 fn rocket() -> _ {
     rocket::build()
+        .mount("/", routes![wild])
         .mount("/", routes![hello])
         .mount("/hello", routes![world, mir])
         .mount("/wave", routes![wave])
